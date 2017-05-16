@@ -13,7 +13,13 @@ def get_tree_connect_request(ip, tree_id):
     tree = "000000" + hex(len(smb) // 2).replace("0x", "") + smb
     tree_connect_request = HexToByte(tree)
     return tree_connect_request
-
+    
+def calculate_doublepulsar_xor_key(s):
+    """Calaculate Doublepulsar Xor Key
+    """
+    x = (2 * s ^ (((s & 0xff00 | (s << 16)) << 8) | (((s >> 16) | s & 0xff0000) >> 8)))
+    x = x & 0xffffffff  # this line was added just to truncate to 32 bits
+    return x
 
 def check(ip, port=445):
     negotiate_protocol_request = HexToByte(
@@ -45,13 +51,27 @@ def check(ip, port=445):
         tree_id = data[32:34]
         smb = get_tree_connect_request(ip, tree_id)
         s.send(smb)
-        s.recv(buffersize)
-        poc = HexToByte(
-            "0000004aff534d422500000000180128000000000000000000000000" + ByteToHex(user_id) + "729c" + ByteToHex(tree_id) + "c4e11000000000ffffffff0000000000000000000000004a0000004a0002002300000007005c504950455c00")
+        data = s.recv(buffersize)
+        double = data[28:36]
+        poc = HexToByte("0000004aff534d422500000000180128000000000000000000000000" + ByteToHex(user_id) + "729c" + ByteToHex(tree_id) + "c4e11000000000ffffffff0000000000000000000000004a0000004a0002002300000007005c504950455c00")
         s.send(poc)
         data = s.recv(buffersize)
-        if r'\x05\x02\x00\xc0' in str(data):
+        nt_status = data[4:36][5:9]
+        if nt_status == b'\x05\x02\x00\xc0':
             print("[+] [{}] Found Vuln MS17-010!! ({})".format(ip, native_os))
+            # vulnerable to MS17-010, check for DoublePulsar infectio
+            tree_id=ByteToHex(double[:2])
+            processid=ByteToHex(double[2:4])
+            multiplex_id=ByteToHex(double[6:8])
+            double=tree_id + processid + ByteToHex(user_id) + multiplex_id
+            trans2_session_setup = HexToByte("0000004fff534d4232000000001807c0000000000000000000000000"+ double +"0f0c0000000100000000000000a6d9a40000000c00420000004e0001000e0000000c00000000000000000000000000")
+            s.send(trans2_session_setup)
+            data = s.recv(buffersize)
+            smb_header = data[4:36]
+            # r = smb_header[-2:]
+            # if(r==b'\x00\x51'):
+            #   key = calculate_doublepulsar_xor_key(smb_header[14:22])
+            #   print("Host is likely INFECTED with DoublePulsar! - XOR Key: {}".format(key))
         else:
             s.close()
             print('oops')
